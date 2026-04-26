@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, PermissionsBitField, SlashCommandBuilder, Routes, REST } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
 
 const client = new Client({
@@ -27,7 +27,8 @@ const CONFIG = {
         MONITOR_ROLE: '1497882194142691398',
         BLOCKED_ROLE: '1494798358089437314',
 
-        // Rank roles in order from lowest to highest
+        // Rank roles in order from LOWEST to HIGHEST
+        // Each key is a role ID, value is array of roles that rank can ASSIGN (promote to)
         RANK_ROLES: {
             '1494798337361186998': ['1497883985198583899', '1497886259148750959'],
             '1497883985198583899': ['1497886259148750959', '1497884120603164772'],
@@ -37,7 +38,7 @@ const CONFIG = {
             '1497884627619283007': ['1497884756694798398', '1497885013675606033'],
             '1497884756694798398': ['1497885013675606033', '1463189207282356276'],
             '1497885013675606033': ['1463189207282356276'],
-            '1463189207282356276': []
+            '1463189207282356276': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772', '1497884416964431932', '1497884627619283007', '1497884756694798398', '1497885013675606033', '1463189207282356276']
         },
 
         ALL_RANK_ROLES: [
@@ -177,8 +178,9 @@ function formatDuration(ms) {
     return `${minutes}m`;
 }
 
+// Get the HIGHEST rank role the member has (searches from top of hierarchy down)
 function getHighestRankRole(member) {
-    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
+    const rankRoles = Object.keys(CONFIG.roles.RANK_ROLES);
     for (let i = rankRoles.length - 1; i >= 0; i--) {
         if (member.roles.cache.has(rankRoles[i])) {
             return rankRoles[i];
@@ -187,22 +189,28 @@ function getHighestRankRole(member) {
     return null;
 }
 
+// Get ALL rank roles the member has
 function getUserRankRoles(member) {
-    return CONFIG.roles.ALL_RANK_ROLES.filter(roleId => member.roles.cache.has(roleId));
+    return Object.keys(CONFIG.roles.RANK_ROLES).filter(roleId => member.roles.cache.has(roleId));
 }
 
-function getRolesUnderRank(highestRoleId) {
-    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
-    const highestIndex = rankRoles.indexOf(highestRoleId);
-    if (highestIndex === -1) return [];
-    return rankRoles.slice(0, highestIndex);
+// Get roles that can be PROMOTED TO based on user's highest rank (uses RANK_ROLES mapping)
+function getPromotableRoles(highestRoleId) {
+    return CONFIG.roles.RANK_ROLES[highestRoleId] || [];
 }
 
-function getRolesAboveRank(highestRoleId) {
-    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
-    const highestIndex = rankRoles.indexOf(highestRoleId);
-    if (highestIndex === -1) return [];
-    return rankRoles.slice(highestIndex + 1);
+// Get roles that can be DEMOTED (roles under user's highest rank that target has)
+// Uses ALL_RANK_ROLES order (lowest to highest)
+function getDemotableRoles(highestRoleId, targetMember) {
+    const allRanks = CONFIG.roles.ALL_RANK_ROLES;
+    const userHighestIndex = allRanks.indexOf(highestRoleId);
+    if (userHighestIndex === -1) return [];
+
+    // Roles under the user's rank (lower index = lower rank)
+    const lowerRoles = allRanks.slice(0, userHighestIndex);
+
+    // Return only roles the target actually has
+    return lowerRoles.filter(roleId => targetMember.roles.cache.has(roleId));
 }
 
 async function hasDangerousPermissions(guild, roleId) {
@@ -731,11 +739,11 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
         }
 
-        // Get roles ABOVE the user's highest rank (roles they can promote to)
-        const promotableRoles = getRolesAboveRank(highestRole);
+        // Use the RANK_ROLES mapping to get promotable roles for this user's highest rank
+        const promotableRoles = getPromotableRoles(highestRole);
 
         if (promotableRoles.length === 0) {
-            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'You are at the highest rank and cannot promote anyone further.')] });
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'You cannot promote anyone to any roles.')] });
         }
 
         // Filter out roles the target already has and dangerous roles
@@ -748,7 +756,7 @@ client.on('messageCreate', async (message) => {
         }
 
         if (availablePromotions.length === 0) {
-            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'This user cannot be promoted any further by you, or all available roles have dangerous permissions.')] });
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'This user already has all the roles you can promote them to, or all available roles have dangerous permissions.')] });
         }
 
         // Build select menu options
@@ -765,7 +773,7 @@ client.on('messageCreate', async (message) => {
         }
 
         const embed = createRedEmbed('[!] Promote User',
-            `**Target:** <@${targetUser.id}>\n\nSelect a role to promote them to from the dropdown below.\n\n*Only showing roles above your rank that the user doesn't already have.*`);
+            `**Target:** <@${targetUser.id}>\n**Your Highest Rank:** <@&${highestRole}>\n\nSelect a role to promote them to from the dropdown below.`);
 
         const row = new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -776,8 +784,7 @@ client.on('messageCreate', async (message) => {
 
         await message.reply({
             embeds: [embed],
-            components: [row],
-            ephemeral: true
+            components: [row]
         });
     }
 
@@ -804,19 +811,16 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
         }
 
-        // Get roles UNDER the user's highest rank (roles they can demote)
-        const demotableRoles = getRolesUnderRank(highestRole);
+        // Get demotable roles using ALL_RANK_ROLES hierarchy
+        const demotableRoles = getDemotableRoles(highestRole, targetMember);
 
-        // Filter to only roles the target actually has
-        const targetDemotableRoles = demotableRoles.filter(roleId => targetMember.roles.cache.has(roleId));
-
-        if (targetDemotableRoles.length === 0) {
+        if (demotableRoles.length === 0) {
             return message.reply({ embeds: [createRedEmbed('[X] No Roles to Demote', 'This user has no rank roles under your rank that can be demoted.')] });
         }
 
         // Filter out dangerous roles
         const availableDemotions = [];
-        for (const roleId of targetDemotableRoles) {
+        for (const roleId of demotableRoles) {
             const isDangerous = await hasDangerousPermissions(message.guild, roleId);
             if (isDangerous) continue;
             availableDemotions.push(roleId);
@@ -840,7 +844,7 @@ client.on('messageCreate', async (message) => {
         }
 
         const embed = createRedEmbed('[!] Demote User',
-            `**Target:** <@${targetUser.id}>\n\nSelect a role to demote them from using the dropdown below.\n\n*Only showing roles under your rank that the user currently has.*`);
+            `**Target:** <@${targetUser.id}>\n**Your Highest Rank:** <@&${highestRole}>\n\nSelect a role to demote them from using the dropdown below.`);
 
         const row = new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -851,8 +855,7 @@ client.on('messageCreate', async (message) => {
 
         await message.reply({
             embeds: [embed],
-            components: [row],
-            ephemeral: true
+            components: [row]
         });
     }
 
