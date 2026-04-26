@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder, Routes, REST } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, PermissionsBitField, SlashCommandBuilder, Routes, REST } = require('discord.js');
 const fs = require('fs');
 
 const client = new Client({
@@ -27,13 +27,17 @@ const CONFIG = {
         MONITOR_ROLE: '1497882194142691398',
         BLOCKED_ROLE: '1494798358089437314',
 
+        // Rank roles in order from lowest to highest
         RANK_ROLES: {
-            '1497884692471349392': ['1494798337361186998', '1497883985198583899', '1497886259148750959'],
-            '1497884833446363286': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772'],
-            '1497884892351041698': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772', '1497884416964431932'],
-            '1497884955034779668': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772', '1497884416964431932', '1497884627619283007', '1497884756694798398'],
-            '1497885013675606033': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772', '1497884416964431932', '1497884627619283007', '1497884756694798398', '1497885013675606033'],
-            '1463189207282356276': ['1494798337361186998', '1497883985198583899', '1497886259148750959', '1497884120603164772', '1497884416964431932', '1497884627619283007', '1497884756694798398', '1497885013675606033', '1463189207282356276']
+            '1494798337361186998': ['1497883985198583899', '1497886259148750959'],
+            '1497883985198583899': ['1497886259148750959', '1497884120603164772'],
+            '1497886259148750959': ['1497884120603164772', '1497884416964431932'],
+            '1497884120603164772': ['1497884416964431932', '1497884627619283007'],
+            '1497884416964431932': ['1497884627619283007', '1497884756694798398'],
+            '1497884627619283007': ['1497884756694798398', '1497885013675606033'],
+            '1497884756694798398': ['1497885013675606033', '1463189207282356276'],
+            '1497885013675606033': ['1463189207282356276'],
+            '1463189207282356276': []
         },
 
         ALL_RANK_ROLES: [
@@ -174,7 +178,7 @@ function formatDuration(ms) {
 }
 
 function getHighestRankRole(member) {
-    const rankRoles = Object.keys(CONFIG.roles.RANK_ROLES);
+    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
     for (let i = rankRoles.length - 1; i >= 0; i--) {
         if (member.roles.cache.has(rankRoles[i])) {
             return rankRoles[i];
@@ -183,20 +187,22 @@ function getHighestRankRole(member) {
     return null;
 }
 
-function canAssignRole(assignerRoleId, targetRoleId) {
-    const rankRoles = Object.keys(CONFIG.roles.RANK_ROLES);
-    const assignerIndex = rankRoles.indexOf(assignerRoleId);
-    const targetIndex = rankRoles.indexOf(targetRoleId);
+function getUserRankRoles(member) {
+    return CONFIG.roles.ALL_RANK_ROLES.filter(roleId => member.roles.cache.has(roleId));
+}
 
-    if (assignerIndex !== -1 && targetIndex !== -1) {
-        return targetIndex < assignerIndex;
-    }
+function getRolesUnderRank(highestRoleId) {
+    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
+    const highestIndex = rankRoles.indexOf(highestRoleId);
+    if (highestIndex === -1) return [];
+    return rankRoles.slice(0, highestIndex);
+}
 
-    if (assignerIndex !== -1 && targetIndex === -1) {
-        return true;
-    }
-
-    return false;
+function getRolesAboveRank(highestRoleId) {
+    const rankRoles = CONFIG.roles.ALL_RANK_ROLES;
+    const highestIndex = rankRoles.indexOf(highestRoleId);
+    if (highestIndex === -1) return [];
+    return rankRoles.slice(highestIndex + 1);
 }
 
 async function hasDangerousPermissions(guild, roleId) {
@@ -220,51 +226,11 @@ async function hasDangerousPermissions(guild, roleId) {
     }
 }
 
-// ============ SLASH COMMAND DEFINITIONS ============
-const slashCommands = [
-    new SlashCommandBuilder()
-        .setName('promote')
-        .setDescription('Promote a user to a higher rank')
-        .addUserOption(option =>
-            option.setName('user')
-                .setDescription('The user to promote')
-                .setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('demote')
-        .setDescription('Demote a user to a lower rank')
-        .addUserOption(option =>
-            option.setName('user')
-                .setDescription('The user to demote')
-                .setRequired(true))
-];
-
-// ============ DEPLOY SLASH COMMANDS ============
-async function deploySlashCommands() {
-    if (!CONFIG.token || !CONFIG.clientId || !CONFIG.guildId) {
-        console.log('Missing CLIENT_ID or GUILD_ID env vars. Slash commands will not be registered.');
-        return;
-    }
-
-    const rest = new REST({ version: '10' }).setToken(CONFIG.token);
-
-    try {
-        console.log('Deploying slash commands...');
-        await rest.put(
-            Routes.applicationGuildCommands(CONFIG.clientId, CONFIG.guildId),
-            { body: slashCommands.map(cmd => cmd.toJSON()) }
-        );
-        console.log('Slash commands deployed successfully!');
-    } catch (error) {
-        console.error('Error deploying slash commands:', error.message);
-    }
-}
-
 // ============ BOT READY ============
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
     loadWarnings();
     loadBreakData();
-    deploySlashCommands();
 });
 
 // ============ ROLE MONITORING ============
@@ -280,171 +246,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
         } catch (err) {
             console.error(`Failed to auto-remove blocked role from ${newMember.user.tag}:`, err);
         }
-    }
-});
-
-// ============ SLASH COMMAND HANDLER ============
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) {
-        // Handle button interactions
-        return handleButtonInteraction(interaction);
-    }
-
-    const { commandName } = interaction;
-
-    // ==================== PROMOTE SLASH COMMAND ====================
-    if (commandName === 'promote') {
-        const member = interaction.member;
-        const highestRole = getHighestRankRole(member);
-
-        if (!highestRole) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
-        }
-
-        const targetUser = interaction.options.getUser('user');
-        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
-        }
-
-        const availableRoles = CONFIG.roles.RANK_ROLES[highestRole] || [];
-        const promotableRoles = availableRoles.filter(roleId =>
-            canAssignRole(highestRole, roleId) && !targetMember.roles.cache.has(roleId)
-        );
-
-        if (promotableRoles.length === 0) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'This user cannot be promoted any further by you.')] });
-        }
-
-        let roleList = '';
-        promotableRoles.forEach((roleId, index) => {
-            const role = interaction.guild.roles.cache.get(roleId);
-            const roleName = role ? role.name : roleId;
-            roleList += `${index + 1}. ${roleName}\n`;
-        });
-
-        const embed = createRedEmbed('[!] Promote User',
-            `**Target:** <@${targetUser.id}>\n**Available roles you can promote to:**\n${roleList}\nReply with the number of the role you want to assign.`);
-
-        await interaction.reply({ embeds: [embed] });
-
-        const filter = (m) => m.author.id === member.id && !isNaN(m.content);
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async (m) => {
-            const choice = parseInt(m.content);
-            if (choice < 1 || choice > promotableRoles.length) {
-                return m.reply({ embeds: [createRedEmbed('[X] Invalid Choice', `Please choose a number between 1 and ${promotableRoles.length}.`)] });
-            }
-
-            const selectedRoleId = promotableRoles[choice - 1];
-
-            const isDangerous = await hasDangerousPermissions(interaction.guild, selectedRoleId);
-            if (isDangerous) {
-                return m.reply({ embeds: [createRedEmbed('[X] Dangerous Role', 'You cannot assign roles with administrator or dangerous permissions.')] });
-            }
-
-            const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
-
-            const confirmEmbed = createRedEmbed('[!] Promote Request',
-                `**Requester:** <@${member.id}>\n**Target:** <@${targetUser.id}>\n**Role:** <@&${selectedRoleId}>\n\nAn admin needs to approve this promotion.`);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`rank_confirm_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
-                    .setLabel('Approve')
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId(`rank_decline_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
-                    .setLabel('Decline')
-                    .setStyle(ButtonStyle.Danger)
-            );
-
-            await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
-            await m.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your promotion request has been sent for admin approval.')] });
-        });
-
-        collector.on('end', (collected) => {
-            if (collected.size === 0) {
-                interaction.channel.send({ embeds: [createRedEmbed('[X] Timed Out', 'You did not respond in time.')] });
-            }
-        });
-    }
-
-    // ==================== DEMOTE SLASH COMMAND ====================
-    if (commandName === 'demote') {
-        const member = interaction.member;
-        const highestRole = getHighestRankRole(member);
-
-        if (!highestRole) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
-        }
-
-        const targetUser = interaction.options.getUser('user');
-        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
-        }
-
-        const availableRoles = CONFIG.roles.RANK_ROLES[highestRole] || [];
-        const demotableRoles = availableRoles.filter(roleId =>
-            targetMember.roles.cache.has(roleId)
-        );
-
-        if (demotableRoles.length === 0) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] No Roles to Demote', 'This user has no roles that you can demote.')] });
-        }
-
-        let roleList = '';
-        demotableRoles.forEach((roleId, index) => {
-            const role = interaction.guild.roles.cache.get(roleId);
-            const roleName = role ? role.name : roleId;
-            roleList += `${index + 1}. ${roleName}\n`;
-        });
-
-        const embed = createRedEmbed('[!] Demote User',
-            `**Target:** <@${targetUser.id}>\n**Roles you can demote:**\n${roleList}\nReply with the number of the role you want to remove.`);
-
-        await interaction.reply({ embeds: [embed] });
-
-        const filter = (m) => m.author.id === member.id && !isNaN(m.content);
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async (m) => {
-            const choice = parseInt(m.content);
-            if (choice < 1 || choice > demotableRoles.length) {
-                return m.reply({ embeds: [createRedEmbed('[X] Invalid Choice', `Please choose a number between 1 and ${demotableRoles.length}.`)] });
-            }
-
-            const selectedRoleId = demotableRoles[choice - 1];
-
-            const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
-
-            const confirmEmbed = createRedEmbed('[!] Demote Request',
-                `**Requester:** <@${member.id}>\n**Target:** <@${targetUser.id}>\n**Role to remove:** <@&${selectedRoleId}>\n\nAn admin needs to approve this demotion.`);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`demote_confirm_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
-                    .setLabel('Approve')
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId(`demote_decline_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
-                    .setLabel('Decline')
-                    .setStyle(ButtonStyle.Danger)
-            );
-
-            await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
-            await m.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your demotion request has been sent for admin approval.')] });
-        });
-
-        collector.on('end', (collected) => {
-            if (collected.size === 0) {
-                interaction.channel.send({ embeds: [createRedEmbed('[X] Timed Out', 'You did not respond in time.')] });
-            }
-        });
     }
 });
 
@@ -543,7 +344,7 @@ async function handleButtonInteraction(interaction) {
         });
     }
 
-    // ==================== RANK BUTTONS ====================
+    // ==================== RANK BUTTONS (PROMOTE) ====================
     if (customId.startsWith('rank_confirm_')) {
         const parts = customId.split('_');
         const targetUserId = parts[2];
@@ -789,6 +590,116 @@ async function handleButtonInteraction(interaction) {
     }
 }
 
+// ============ SELECT MENU HANDLER ============
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.isChatInputCommand()) return;
+    if (interaction.isButton()) return handleButtonInteraction(interaction);
+    if (!interaction.isStringSelectMenu()) return;
+
+    const customId = interaction.customId;
+
+    // ==================== PROMOTE SELECT MENU ====================
+    if (customId.startsWith('promote_select_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        if (interaction.user.id !== requesterId) {
+            return interaction.reply({
+                embeds: [createRedEmbed('[X] Not For You', 'Only the command user can select a role.')],
+                ephemeral: true
+            });
+        }
+
+        const selectedRoleId = interaction.values[0];
+        const targetMember = await interaction.guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        // Check if role has dangerous permissions
+        const isDangerous = await hasDangerousPermissions(interaction.guild, selectedRoleId);
+        if (isDangerous) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Dangerous Role', 'You cannot assign roles with administrator or dangerous permissions.')],
+                components: []
+            });
+        }
+
+        const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
+
+        const confirmEmbed = createRedEmbed('[!] Promote Request',
+            `**Requester:** <@${requesterId}>\n**Target:** <@${targetUserId}>\n**Role:** <@&${selectedRoleId}>\n\nAn admin needs to approve this promotion.`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`rank_confirm_${targetUserId}_${selectedRoleId}_${requesterId}_${Date.now()}`)
+                .setLabel('Approve')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`rank_decline_${targetUserId}_${selectedRoleId}_${requesterId}_${Date.now()}`)
+                .setLabel('Decline')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
+        await interaction.update({
+            embeds: [createRedEmbed('[...] Awaiting Approval', 'Your promotion request has been sent for admin approval.')],
+            components: []
+        });
+    }
+
+    // ==================== DEMOTE SELECT MENU ====================
+    if (customId.startsWith('demote_select_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        if (interaction.user.id !== requesterId) {
+            return interaction.reply({
+                embeds: [createRedEmbed('[X] Not For You', 'Only the command user can select a role.')],
+                ephemeral: true
+            });
+        }
+
+        const selectedRoleId = interaction.values[0];
+        const targetMember = await interaction.guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
+
+        const confirmEmbed = createRedEmbed('[!] Demote Request',
+            `**Requester:** <@${requesterId}>\n**Target:** <@${targetUserId}>\n**Role to remove:** <@&${selectedRoleId}>\n\nAn admin needs to approve this demotion.`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`demote_confirm_${targetUserId}_${selectedRoleId}_${requesterId}_${Date.now()}`)
+                .setLabel('Approve')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`demote_decline_${targetUserId}_${selectedRoleId}_${requesterId}_${Date.now()}`)
+                .setLabel('Decline')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
+        await interaction.update({
+            embeds: [createRedEmbed('[...] Awaiting Approval', 'Your demotion request has been sent for admin approval.')],
+            components: []
+        });
+    }
+});
+
 // ============ PREFIX COMMAND HANDLER ============
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -796,6 +707,154 @@ client.on('messageCreate', async (message) => {
 
     const args = message.content.slice(1).trim().split(/\s+/);
     const command = args.shift().toLowerCase();
+
+    // ==================== PROMOTE COMMAND ====================
+    if (command === 'promote') {
+        const member = message.member;
+        const highestRole = getHighestRankRole(member);
+
+        if (!highestRole) {
+            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        if (args.length < 1) {
+            return message.reply({ embeds: [createRedEmbed('[X] Invalid Usage', 'Usage: .promote @user')] });
+        }
+
+        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+        if (!targetUser) {
+            return message.reply({ embeds: [createRedEmbed('[X] User Not Found', 'Could not find that user.')] });
+        }
+
+        const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+        if (!targetMember) {
+            return message.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
+        }
+
+        // Get roles ABOVE the user's highest rank (roles they can promote to)
+        const promotableRoles = getRolesAboveRank(highestRole);
+
+        if (promotableRoles.length === 0) {
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'You are at the highest rank and cannot promote anyone further.')] });
+        }
+
+        // Filter out roles the target already has and dangerous roles
+        const availablePromotions = [];
+        for (const roleId of promotableRoles) {
+            if (targetMember.roles.cache.has(roleId)) continue;
+            const isDangerous = await hasDangerousPermissions(message.guild, roleId);
+            if (isDangerous) continue;
+            availablePromotions.push(roleId);
+        }
+
+        if (availablePromotions.length === 0) {
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'This user cannot be promoted any further by you, or all available roles have dangerous permissions.')] });
+        }
+
+        // Build select menu options
+        const selectOptions = [];
+        for (const roleId of availablePromotions) {
+            const role = message.guild.roles.cache.get(roleId);
+            if (role) {
+                selectOptions.push({
+                    label: role.name,
+                    value: roleId,
+                    description: `Promote to ${role.name}`
+                });
+            }
+        }
+
+        const embed = createRedEmbed('[!] Promote User',
+            `**Target:** <@${targetUser.id}>\n\nSelect a role to promote them to from the dropdown below.\n\n*Only showing roles above your rank that the user doesn't already have.*`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(`promote_select_${targetUser.id}_${member.id}_${Date.now()}`)
+                .setPlaceholder('Select a role to promote to')
+                .addOptions(selectOptions)
+        );
+
+        await message.reply({
+            embeds: [embed],
+            components: [row],
+            ephemeral: true
+        });
+    }
+
+    // ==================== DEMOTE COMMAND ====================
+    if (command === 'demote') {
+        const member = message.member;
+        const highestRole = getHighestRankRole(member);
+
+        if (!highestRole) {
+            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        if (args.length < 1) {
+            return message.reply({ embeds: [createRedEmbed('[X] Invalid Usage', 'Usage: .demote @user')] });
+        }
+
+        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+        if (!targetUser) {
+            return message.reply({ embeds: [createRedEmbed('[X] User Not Found', 'Could not find that user.')] });
+        }
+
+        const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+        if (!targetMember) {
+            return message.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
+        }
+
+        // Get roles UNDER the user's highest rank (roles they can demote)
+        const demotableRoles = getRolesUnderRank(highestRole);
+
+        // Filter to only roles the target actually has
+        const targetDemotableRoles = demotableRoles.filter(roleId => targetMember.roles.cache.has(roleId));
+
+        if (targetDemotableRoles.length === 0) {
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles to Demote', 'This user has no rank roles under your rank that can be demoted.')] });
+        }
+
+        // Filter out dangerous roles
+        const availableDemotions = [];
+        for (const roleId of targetDemotableRoles) {
+            const isDangerous = await hasDangerousPermissions(message.guild, roleId);
+            if (isDangerous) continue;
+            availableDemotions.push(roleId);
+        }
+
+        if (availableDemotions.length === 0) {
+            return message.reply({ embeds: [createRedEmbed('[X] No Roles to Demote', 'This user has no demotable roles under your rank (all remaining roles may have dangerous permissions).')] });
+        }
+
+        // Build select menu options
+        const selectOptions = [];
+        for (const roleId of availableDemotions) {
+            const role = message.guild.roles.cache.get(roleId);
+            if (role) {
+                selectOptions.push({
+                    label: role.name,
+                    value: roleId,
+                    description: `Demote and remove ${role.name}`
+                });
+            }
+        }
+
+        const embed = createRedEmbed('[!] Demote User',
+            `**Target:** <@${targetUser.id}>\n\nSelect a role to demote them from using the dropdown below.\n\n*Only showing roles under your rank that the user currently has.*`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(`demote_select_${targetUser.id}_${member.id}_${Date.now()}`)
+                .setPlaceholder('Select a role to demote from')
+                .addOptions(selectOptions)
+        );
+
+        await message.reply({
+            embeds: [embed],
+            components: [row],
+            ephemeral: true
+        });
+    }
 
     // ==================== WARN COMMAND ====================
     if (command === 'warn') {
