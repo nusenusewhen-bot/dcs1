@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder, Routes, REST } = require('discord.js');
 const fs = require('fs');
 
 const client = new Client({
@@ -15,6 +15,8 @@ const client = new Client({
 // ============ CONFIGURATION ============
 const CONFIG = {
     token: process.env.TOKEN,
+    clientId: process.env.CLIENT_ID,
+    guildId: process.env.GUILD_ID,
 
     roles: {
         MODERATOR: '1497886259148750959',
@@ -218,15 +220,54 @@ async function hasDangerousPermissions(guild, roleId) {
     }
 }
 
+// ============ SLASH COMMAND DEFINITIONS ============
+const slashCommands = [
+    new SlashCommandBuilder()
+        .setName('promote')
+        .setDescription('Promote a user to a higher rank')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to promote')
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('demote')
+        .setDescription('Demote a user to a lower rank')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to demote')
+                .setRequired(true))
+];
+
+// ============ DEPLOY SLASH COMMANDS ============
+async function deploySlashCommands() {
+    if (!CONFIG.token || !CONFIG.clientId || !CONFIG.guildId) {
+        console.log('Missing CLIENT_ID or GUILD_ID env vars. Slash commands will not be registered.');
+        return;
+    }
+
+    const rest = new REST({ version: '10' }).setToken(CONFIG.token);
+
+    try {
+        console.log('Deploying slash commands...');
+        await rest.put(
+            Routes.applicationGuildCommands(CONFIG.clientId, CONFIG.guildId),
+            { body: slashCommands.map(cmd => cmd.toJSON()) }
+        );
+        console.log('Slash commands deployed successfully!');
+    } catch (error) {
+        console.error('Error deploying slash commands:', error.message);
+    }
+}
+
 // ============ BOT READY ============
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
     loadWarnings();
     loadBreakData();
+    deploySlashCommands();
 });
 
 // ============ ROLE MONITORING ============
-// If user with MONITOR_ROLE gets BLOCKED_ROLE, auto-remove BLOCKED_ROLE
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
     const hadBlocked = oldMember.roles.cache.has(CONFIG.roles.BLOCKED_ROLE);
     const hasBlocked = newMember.roles.cache.has(CONFIG.roles.BLOCKED_ROLE);
@@ -242,7 +283,513 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     }
 });
 
-// ============ MESSAGE COMMANDS ============
+// ============ SLASH COMMAND HANDLER ============
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) {
+        // Handle button interactions
+        return handleButtonInteraction(interaction);
+    }
+
+    const { commandName } = interaction;
+
+    // ==================== PROMOTE SLASH COMMAND ====================
+    if (commandName === 'promote') {
+        const member = interaction.member;
+        const highestRole = getHighestRankRole(member);
+
+        if (!highestRole) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        const targetUser = interaction.options.getUser('user');
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
+        }
+
+        const availableRoles = CONFIG.roles.RANK_ROLES[highestRole] || [];
+        const promotableRoles = availableRoles.filter(roleId =>
+            canAssignRole(highestRole, roleId) && !targetMember.roles.cache.has(roleId)
+        );
+
+        if (promotableRoles.length === 0) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] No Roles Available', 'This user cannot be promoted any further by you.')] });
+        }
+
+        let roleList = '';
+        promotableRoles.forEach((roleId, index) => {
+            const role = interaction.guild.roles.cache.get(roleId);
+            const roleName = role ? role.name : roleId;
+            roleList += `${index + 1}. ${roleName}\n`;
+        });
+
+        const embed = createRedEmbed('[!] Promote User',
+            `**Target:** <@${targetUser.id}>\n**Available roles you can promote to:**\n${roleList}\nReply with the number of the role you want to assign.`);
+
+        await interaction.reply({ embeds: [embed] });
+
+        const filter = (m) => m.author.id === member.id && !isNaN(m.content);
+        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
+
+        collector.on('collect', async (m) => {
+            const choice = parseInt(m.content);
+            if (choice < 1 || choice > promotableRoles.length) {
+                return m.reply({ embeds: [createRedEmbed('[X] Invalid Choice', `Please choose a number between 1 and ${promotableRoles.length}.`)] });
+            }
+
+            const selectedRoleId = promotableRoles[choice - 1];
+
+            const isDangerous = await hasDangerousPermissions(interaction.guild, selectedRoleId);
+            if (isDangerous) {
+                return m.reply({ embeds: [createRedEmbed('[X] Dangerous Role', 'You cannot assign roles with administrator or dangerous permissions.')] });
+            }
+
+            const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
+
+            const confirmEmbed = createRedEmbed('[!] Promote Request',
+                `**Requester:** <@${member.id}>\n**Target:** <@${targetUser.id}>\n**Role:** <@&${selectedRoleId}>\n\nAn admin needs to approve this promotion.`);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`rank_confirm_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
+                    .setLabel('Approve')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`rank_decline_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
+                    .setLabel('Decline')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+            await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
+            await m.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your promotion request has been sent for admin approval.')] });
+        });
+
+        collector.on('end', (collected) => {
+            if (collected.size === 0) {
+                interaction.channel.send({ embeds: [createRedEmbed('[X] Timed Out', 'You did not respond in time.')] });
+            }
+        });
+    }
+
+    // ==================== DEMOTE SLASH COMMAND ====================
+    if (commandName === 'demote') {
+        const member = interaction.member;
+        const highestRole = getHighestRankRole(member);
+
+        if (!highestRole) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        const targetUser = interaction.options.getUser('user');
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
+        }
+
+        const availableRoles = CONFIG.roles.RANK_ROLES[highestRole] || [];
+        const demotableRoles = availableRoles.filter(roleId =>
+            targetMember.roles.cache.has(roleId)
+        );
+
+        if (demotableRoles.length === 0) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] No Roles to Demote', 'This user has no roles that you can demote.')] });
+        }
+
+        let roleList = '';
+        demotableRoles.forEach((roleId, index) => {
+            const role = interaction.guild.roles.cache.get(roleId);
+            const roleName = role ? role.name : roleId;
+            roleList += `${index + 1}. ${roleName}\n`;
+        });
+
+        const embed = createRedEmbed('[!] Demote User',
+            `**Target:** <@${targetUser.id}>\n**Roles you can demote:**\n${roleList}\nReply with the number of the role you want to remove.`);
+
+        await interaction.reply({ embeds: [embed] });
+
+        const filter = (m) => m.author.id === member.id && !isNaN(m.content);
+        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
+
+        collector.on('collect', async (m) => {
+            const choice = parseInt(m.content);
+            if (choice < 1 || choice > demotableRoles.length) {
+                return m.reply({ embeds: [createRedEmbed('[X] Invalid Choice', `Please choose a number between 1 and ${demotableRoles.length}.`)] });
+            }
+
+            const selectedRoleId = demotableRoles[choice - 1];
+
+            const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
+
+            const confirmEmbed = createRedEmbed('[!] Demote Request',
+                `**Requester:** <@${member.id}>\n**Target:** <@${targetUser.id}>\n**Role to remove:** <@&${selectedRoleId}>\n\nAn admin needs to approve this demotion.`);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`demote_confirm_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
+                    .setLabel('Approve')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`demote_decline_${targetUser.id}_${selectedRoleId}_${member.id}_${Date.now()}`)
+                    .setLabel('Decline')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+            await rankConfirmChannel.send({ embeds: [confirmEmbed], components: [row] });
+            await m.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your demotion request has been sent for admin approval.')] });
+        });
+
+        collector.on('end', (collected) => {
+            if (collected.size === 0) {
+                interaction.channel.send({ embeds: [createRedEmbed('[X] Timed Out', 'You did not respond in time.')] });
+            }
+        });
+    }
+});
+
+// ============ BUTTON INTERACTION HANDLER ============
+async function handleButtonInteraction(interaction) {
+    if (!interaction.isButton()) return;
+
+    const customId = interaction.customId;
+
+    // ==================== WARN BUTTONS ====================
+    if (customId.startsWith('warn_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const moderatorId = parts[3];
+
+        if (!warningsData[targetUserId]) warningsData[targetUserId] = [];
+
+        const originalMessage = interaction.message;
+        const embedDescription = originalMessage.embeds[0].description;
+        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
+        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
+
+        warningsData[targetUserId].push({
+            reason: reason,
+            timestamp: Date.now(),
+            moderator: moderatorId
+        });
+        saveWarnings();
+
+        await interaction.update({
+            embeds: [createRedEmbed('[OK] Warning Applied', `<@${targetUserId}> has been warned.\n**Reason:** ${reason}`)],
+            components: []
+        });
+    }
+
+    if (customId.startsWith('warn_decline_')) {
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Warning Declined', 'The warning has been declined.')],
+            components: []
+        });
+    }
+
+    // ==================== CLEARWARN BUTTONS ====================
+    if (customId.startsWith('clearwarn_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const warnNumber = parseInt(parts[3]);
+
+        if (warningsData[targetUserId] && warningsData[targetUserId][warnNumber - 1]) {
+            const removed = warningsData[targetUserId].splice(warnNumber - 1, 1);
+            saveWarnings();
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Warning Cleared', `Warning #${warnNumber} for <@${targetUserId}> has been cleared.\n**Reason was:** ${removed[0].reason}`)],
+                components: []
+            });
+        } else {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Warning not found or already cleared.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('clearwarn_decline_')) {
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Declined', 'The clear warning request has been declined.')],
+            components: []
+        });
+    }
+
+    // ==================== CLEARWARNS BUTTONS ====================
+    if (customId.startsWith('clearwarns_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+
+        if (warningsData[targetUserId]) {
+            const count = warningsData[targetUserId].length;
+            delete warningsData[targetUserId];
+            saveWarnings();
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] All Warnings Cleared', `All ${count} warning(s) for <@${targetUserId}> have been cleared.`)],
+                components: []
+            });
+        } else {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'No warnings found for this user.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('clearwarns_decline_')) {
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Declined', 'The clear all warnings request has been declined.')],
+            components: []
+        });
+    }
+
+    // ==================== RANK BUTTONS ====================
+    if (customId.startsWith('rank_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+        const requesterId = parts[4];
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        try {
+            await targetMember.roles.add(targetRoleId);
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Rank Up Approved', `<@${targetUserId}> has been given <@&${targetRoleId}>.\n**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to add role. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('rank_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Rank Up Declined', `<@${targetUserId}> will not receive <@&${targetRoleId}>.\n**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+    // ==================== DEMOTE BUTTONS ====================
+    if (customId.startsWith('demote_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+        const requesterId = parts[4];
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        try {
+            await targetMember.roles.remove(targetRoleId);
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Demote Approved', `<@${targetUserId}> has been demoted and <@&${targetRoleId}> removed.\n**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to remove role. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('demote_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Demote Declined', `<@${targetUserId}> will not be demoted. <@&${targetRoleId}> stays.\n**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+    // ==================== KICK BUTTONS ====================
+    if (customId.startsWith('kick_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        const originalMessage = interaction.message;
+        const embedDescription = originalMessage.embeds[0].description;
+        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
+        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
+
+        try {
+            await targetMember.kick(reason);
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Kick Approved', `<@${targetUserId}> has been kicked.\n**Reason:** ${reason}\n**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to kick user. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('kick_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Kick Declined', `<@${targetUserId}> will not be kicked.\n**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+    // ==================== BAN BUTTONS ====================
+    if (customId.startsWith('ban_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        const guild = interaction.guild;
+
+        const originalMessage = interaction.message;
+        const embedDescription = originalMessage.embeds[0].description;
+        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
+        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
+
+        try {
+            await guild.members.ban(targetUserId, { reason: reason });
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Ban Approved', `<@${targetUserId}> has been banned.\n**Reason:** ${reason}\n**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to ban user. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('ban_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Ban Declined', `<@${targetUserId}> will not be banned.\n**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+    // ==================== DAWUUD BUTTONS ====================
+    if (customId.includes('_accept') && customId.startsWith('dawuud_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[1];
+        const uniqueId = `dawuud_${targetUserId}_${parts[2]}`;
+
+        const buttonData = activeButtons.get(uniqueId);
+
+        if (!buttonData) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Expired', 'This button has expired or already been used.')], ephemeral: true });
+        }
+
+        if (buttonData.used) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Already Used', 'This button has already been clicked.')], ephemeral: true });
+        }
+
+        if (interaction.user.id !== targetUserId) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Not For You', 'Only the mentioned user can click these buttons.')], ephemeral: true });
+        }
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Error', 'Could not find you in the server.')], ephemeral: true });
+        }
+
+        try {
+            await targetMember.roles.add(CONFIG.roles.BREAK_ROLE);
+
+            buttonData.used = true;
+            activeButtons.set(uniqueId, buttonData);
+
+            try {
+                const targetUser = await client.users.fetch(targetUserId);
+                await targetUser.send({ embeds: [createRedEmbed('Welcome!', CONFIG.dawuud.dmMessage)] });
+            } catch (dmErr) {
+                console.log('Could not DM user:', dmErr.message);
+            }
+
+            await interaction.update({
+                content: `<@${targetUserId}> has accepted our request. <@${targetUserId}> please check your DMs to learn how to hit.`,
+                embeds: [createRedEmbed('[OK] Accepted', `<@${targetUserId}> has accepted the hitter request and received the role.`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.reply({ embeds: [createRedEmbed('[X] Error', 'Failed to add role. Contact an admin.')], ephemeral: true });
+        }
+    }
+
+    if (customId.includes('_decline') && customId.startsWith('dawuud_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[1];
+        const uniqueId = `dawuud_${targetUserId}_${parts[2]}`;
+
+        const buttonData = activeButtons.get(uniqueId);
+
+        if (!buttonData) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Expired', 'This button has expired or already been used.')], ephemeral: true });
+        }
+
+        if (buttonData.used) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Already Used', 'This button has already been clicked.')], ephemeral: true });
+        }
+
+        if (interaction.user.id !== targetUserId) {
+            return interaction.reply({ embeds: [createRedEmbed('[X] Not For You', 'Only the mentioned user can click these buttons.')], ephemeral: true });
+        }
+
+        buttonData.used = true;
+        activeButtons.set(uniqueId, buttonData);
+
+        await interaction.update({
+            content: `<@${targetUserId}> has declined our request and won't become a hitter.`,
+            embeds: [createRedEmbed('[X] Declined', `<@${targetUserId}> has declined the hitter request.`)],
+            components: []
+        });
+    }
+}
+
+// ============ PREFIX COMMAND HANDLER ============
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (!message.content.startsWith('.')) return;
@@ -472,78 +1019,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ==================== RANK COMMAND ====================
-    if (command === 'rank') {
-        const highestRole = getHighestRankRole(message.member);
-
-        if (!highestRole) {
-            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
-        }
-
-        if (args.length < 2) {
-            return message.reply({ embeds: [createRedEmbed('[X] Invalid Usage', 'Usage: .rank @user @role or .rank @user roleID')] });
-        }
-
-        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
-        if (!targetUser) {
-            return message.reply({ embeds: [createRedEmbed('[X] User Not Found', 'Could not find that user.')] });
-        }
-
-        let targetRole = message.mentions.roles.first();
-
-        if (!targetRole && args[1]) {
-            targetRole = await message.guild.roles.fetch(args[1]).catch(() => null);
-        }
-
-        if (!targetRole && args[1]) {
-            const roleName = args.slice(1).join(' ');
-            targetRole = message.guild.roles.cache.find(r =>
-                r.name.toLowerCase() === roleName.toLowerCase()
-            );
-        }
-
-        if (!targetRole) {
-            return message.reply({ embeds: [createRedEmbed('[X] Role Not Found', 'Please mention a valid role, provide a role ID, or use the exact role name.')] });
-        }
-
-        const isDangerous = await hasDangerousPermissions(message.guild, targetRole.id);
-        if (isDangerous) {
-            return message.reply({ embeds: [createRedEmbed('[X] Dangerous Role', 'You cannot assign roles with administrator or dangerous permissions.')] });
-        }
-
-        if (!canAssignRole(highestRole, targetRole.id)) {
-            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You cannot assign a role higher than or equal to your own.')] });
-        }
-
-        const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
-        if (!targetMember) {
-            return message.reply({ embeds: [createRedEmbed('[X] Member Not Found', 'Could not find that member in the server.')] });
-        }
-
-        if (targetMember.roles.cache.has(targetRole.id)) {
-            return message.reply({ embeds: [createRedEmbed('[X] Already Has Role', 'This user already has that role.')] });
-        }
-
-        const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
-
-        const embed = createRedEmbed('[!] Rank Up Request',
-            `**Requester:** <@${message.author.id}>\n**Target:** <@${targetUser.id}>\n**Role:** <@&${targetRole.id}>\n\nAn admin needs to approve this request.`);
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`rank_confirm_${targetUser.id}_${targetRole.id}_${message.author.id}_${Date.now()}`)
-                .setLabel('Approve')
-                .setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-                .setCustomId(`rank_decline_${targetUser.id}_${targetRole.id}_${message.author.id}_${Date.now()}`)
-                .setLabel('Decline')
-                .setStyle(ButtonStyle.Danger)
-        );
-
-        await rankConfirmChannel.send({ embeds: [embed], components: [row] });
-        await message.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your rank up request has been sent for admin approval.')] });
-    }
-
     // ==================== KICK COMMAND ====================
     if (command === 'kick') {
         if (!message.member.roles.cache.has('1497884833446363286')) {
@@ -574,11 +1049,7 @@ client.on('messageCreate', async (message) => {
         const confirmChannel = await client.channels.fetch(CONFIG.channels.KICK_BAN_CONFIRM);
 
         const embed = createRedEmbed('[!] Kick Confirmation',
-            `**Target:** <@${targetUser.id}>
-**Reason:** ${reason}
-**Requested by:** <@${message.author.id}>
-
-A higher rank needs to approve this kick.`);
+            `**Target:** <@${targetUser.id}>\n**Reason:** ${reason}\n**Requested by:** <@${message.author.id}>\n\nA higher rank needs to approve this kick.`);
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
@@ -626,11 +1097,7 @@ A higher rank needs to approve this kick.`);
         const confirmChannel = await client.channels.fetch(CONFIG.channels.KICK_BAN_CONFIRM);
 
         const embed = createRedEmbed('[!] Ban Confirmation',
-            `**Target:** <@${targetUser.id}>
-**Reason:** ${reason}
-**Requested by:** <@${message.author.id}>
-
-A higher rank needs to approve this ban.`);
+            `**Target:** <@${targetUser.id}>\n**Reason:** ${reason}\n**Requested by:** <@${message.author.id}>\n\nA higher rank needs to approve this ban.`);
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
@@ -648,7 +1115,7 @@ A higher rank needs to approve this ban.`);
         await message.reply({ embeds: [createRedEmbed('[OK] Confirmation Sent', `A ban confirmation has been sent to <#${CONFIG.channels.KICK_BAN_CONFIRM}>.`)] });
     }
 
-        // ==================== BREAK COMMAND ====================
+    // ==================== BREAK COMMAND ====================
     if (command === 'break') {
         const highestRole = getHighestRankRole(message.member);
         if (!highestRole) {
@@ -751,355 +1218,6 @@ A higher rank needs to approve this ban.`);
         setTimeout(() => {
             activeButtons.delete(uniqueId);
         }, 10 * 60 * 1000);
-    }
-});
-
-// ============ BUTTON INTERACTIONS ============
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-
-    const customId = interaction.customId;
-
-    // ==================== WARN BUTTONS ====================
-    if (customId.startsWith('warn_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const moderatorId = parts[3];
-
-        if (!warningsData[targetUserId]) warningsData[targetUserId] = [];
-
-        const originalMessage = interaction.message;
-        const embedDescription = originalMessage.embeds[0].description;
-        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
-        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
-
-        warningsData[targetUserId].push({
-            reason: reason,
-            timestamp: Date.now(),
-            moderator: moderatorId
-        });
-        saveWarnings();
-
-        await interaction.update({
-            embeds: [createRedEmbed('[OK] Warning Applied', `<@${targetUserId}> has been warned.\n**Reason:** ${reason}`)],
-            components: []
-        });
-    }
-
-    if (customId.startsWith('warn_decline_')) {
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Warning Declined', 'The warning has been declined.')],
-            components: []
-        });
-    }
-
-    // ==================== CLEARWARN BUTTONS ====================
-    if (customId.startsWith('clearwarn_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const warnNumber = parseInt(parts[3]);
-
-        if (warningsData[targetUserId] && warningsData[targetUserId][warnNumber - 1]) {
-            const removed = warningsData[targetUserId].splice(warnNumber - 1, 1);
-            saveWarnings();
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] Warning Cleared', `Warning #${warnNumber} for <@${targetUserId}> has been cleared.\n**Reason was:** ${removed[0].reason}`)],
-                components: []
-            });
-        } else {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'Warning not found or already cleared.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('clearwarn_decline_')) {
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Declined', 'The clear warning request has been declined.')],
-            components: []
-        });
-    }
-
-    // ==================== CLEARWARNS BUTTONS ====================
-    if (customId.startsWith('clearwarns_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-
-        if (warningsData[targetUserId]) {
-            const count = warningsData[targetUserId].length;
-            delete warningsData[targetUserId];
-            saveWarnings();
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] All Warnings Cleared', `All ${count} warning(s) for <@${targetUserId}> have been cleared.`)],
-                components: []
-            });
-        } else {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'No warnings found for this user.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('clearwarns_decline_')) {
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Declined', 'The clear all warnings request has been declined.')],
-            components: []
-        });
-    }
-
-    // ==================== RANK BUTTONS ====================
-    if (customId.startsWith('rank_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const targetRoleId = parts[3];
-        const requesterId = parts[4];
-
-        const guild = interaction.guild;
-        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
-                components: []
-            });
-        }
-
-        try {
-            await targetMember.roles.add(targetRoleId);
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] Rank Up Approved', `<@${targetUserId}> has been given <@&${targetRoleId}>.\n**Approved by:** <@${interaction.user.id}>`)],
-                components: []
-            });
-        } catch (err) {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'Failed to add role. Check bot permissions.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('rank_decline_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const targetRoleId = parts[3];
-
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Rank Up Declined', `<@${targetUserId}> will not receive <@&${targetRoleId}>.\n**Declined by:** <@${interaction.user.id}>`)],
-            components: []
-        });
-    }
-
-    // ==================== KICK BUTTONS ====================
-    if (customId.startsWith('kick_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const requesterId = parts[3];
-
-        const guild = interaction.guild;
-        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
-                components: []
-            });
-        }
-
-        const originalMessage = interaction.message;
-        const embedDescription = originalMessage.embeds[0].description;
-        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
-        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
-
-        try {
-            await targetMember.kick(reason);
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] Kick Approved', `<@${targetUserId}> has been kicked.
-**Reason:** ${reason}
-**Approved by:** <@${interaction.user.id}>`)],
-                components: []
-            });
-        } catch (err) {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'Failed to kick user. Check bot permissions.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('kick_decline_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Kick Declined', `<@${targetUserId}> will not be kicked.
-**Declined by:** <@${interaction.user.id}>`)],
-            components: []
-        });
-    }
-
-    // ==================== BAN BUTTONS ====================
-    if (customId.startsWith('ban_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const requesterId = parts[3];
-
-        const guild = interaction.guild;
-
-        const originalMessage = interaction.message;
-        const embedDescription = originalMessage.embeds[0].description;
-        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
-        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
-
-        try {
-            await guild.members.ban(targetUserId, { reason: reason });
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] Ban Approved', `<@${targetUserId}> has been banned.
-**Reason:** ${reason}
-**Approved by:** <@${interaction.user.id}>`)],
-                components: []
-            });
-        } catch (err) {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'Failed to ban user. Check bot permissions.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('ban_decline_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Ban Declined', `<@${targetUserId}> will not be banned.
-**Declined by:** <@${interaction.user.id}>`)],
-            components: []
-        });
-    }
-
-        // ==================== DEMOTE BUTTONS ====================
-    if (customId.startsWith('demote_confirm_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const targetRoleId = parts[3];
-        const requesterId = parts[4];
-
-        const guild = interaction.guild;
-        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
-                components: []
-            });
-        }
-
-        try {
-            await targetMember.roles.remove(targetRoleId);
-            await interaction.update({
-                embeds: [createRedEmbed('[OK] Demote Approved', `<@${targetUserId}> has been demoted and <@&${targetRoleId}> removed.
-**Approved by:** <@${interaction.user.id}>`)],
-                components: []
-            });
-        } catch (err) {
-            await interaction.update({
-                embeds: [createRedEmbed('[X] Error', 'Failed to remove role. Check bot permissions.')],
-                components: []
-            });
-        }
-    }
-
-    if (customId.startsWith('demote_decline_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[2];
-        const targetRoleId = parts[3];
-
-        await interaction.update({
-            embeds: [createRedEmbed('[X] Demote Declined', `<@${targetUserId}> will not be demoted. <@&${targetRoleId}> stays.
-**Declined by:** <@${interaction.user.id}>`)],
-            components: []
-        });
-    }
-
-        // ==================== DAWUUD BUTTONS ====================
-    if (customId.includes('_accept') && customId.startsWith('dawuud_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[1];
-        const uniqueId = `dawuud_${targetUserId}_${parts[2]}`;
-
-        const buttonData = activeButtons.get(uniqueId);
-
-        if (!buttonData) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Expired', 'This button has expired or already been used.')], ephemeral: true });
-        }
-
-        if (buttonData.used) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Already Used', 'This button has already been clicked.')], ephemeral: true });
-        }
-
-        if (interaction.user.id !== targetUserId) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Not For You', 'Only the mentioned user can click these buttons.')], ephemeral: true });
-        }
-
-        const guild = interaction.guild;
-        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!targetMember) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Error', 'Could not find you in the server.')], ephemeral: true });
-        }
-
-        try {
-            await targetMember.roles.add(CONFIG.roles.BREAK_ROLE);
-
-            buttonData.used = true;
-            activeButtons.set(uniqueId, buttonData);
-
-            try {
-                const targetUser = await client.users.fetch(targetUserId);
-                await targetUser.send({ embeds: [createRedEmbed('Welcome!', CONFIG.dawuud.dmMessage)] });
-            } catch (dmErr) {
-                console.log('Could not DM user:', dmErr.message);
-            }
-
-            await interaction.update({
-                content: `<@${targetUserId}> has accepted our request. <@${targetUserId}> please check your DMs to learn how to hit.`,
-                embeds: [createRedEmbed('[OK] Accepted', `<@${targetUserId}> has accepted the hitter request and received the role.`)],
-                components: []
-            });
-        } catch (err) {
-            await interaction.reply({ embeds: [createRedEmbed('[X] Error', 'Failed to add role. Contact an admin.')], ephemeral: true });
-        }
-    }
-
-    if (customId.includes('_decline') && customId.startsWith('dawuud_')) {
-        const parts = customId.split('_');
-        const targetUserId = parts[1];
-        const uniqueId = `dawuud_${targetUserId}_${parts[2]}`;
-
-        const buttonData = activeButtons.get(uniqueId);
-
-        if (!buttonData) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Expired', 'This button has expired or already been used.')], ephemeral: true });
-        }
-
-        if (buttonData.used) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Already Used', 'This button has already been clicked.')], ephemeral: true });
-        }
-
-        if (interaction.user.id !== targetUserId) {
-            return interaction.reply({ embeds: [createRedEmbed('[X] Not For You', 'Only the mentioned user can click these buttons.')], ephemeral: true });
-        }
-
-        buttonData.used = true;
-        activeButtons.set(uniqueId, buttonData);
-
-        await interaction.update({
-            content: `<@${targetUserId}> has declined our request and won't become a hitter.`,
-            embeds: [createRedEmbed('[X] Declined', `<@${targetUserId}> has declined the hitter request.`)],
-            components: []
-        });
     }
 });
 
