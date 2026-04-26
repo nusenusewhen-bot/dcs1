@@ -54,8 +54,30 @@ const CONFIG = {
     },
 
     dawuud: {
-        embedMessage: 'Custom message here',
-        dmMessage: 'Custom dm message here'
+        embedMessage: '# Welcome to Axz hitting community.
+
+you’re probably thinking, **whats hitting?**
+Hitting is a scam method used with middleman and a hitter.
+**Whats a hitter?**
+a hitter is a guy that works with the middleman to scam.
+**Do i get my stuff back?**
+No, but you can get 100x the stuff you lost.
+
+# Tutorial will be sent in your dm’s after you click accept.
+or decline and stay **poor**',
+        dmMessage: 'Welcome, i see you clicked accept. 
+That means you became a hitter.
+**Whats my duty?** your probably asking. so what you do is.
+• 1. Find a good trading server
+• 2. Find a trader whos willing to trade with you.
+• 3. Try manipulating him into using our server as middleman.
+• 4. if he accepts, make him join server and after create a middleman ticket and wait for middleman arrival.
+• 5. Middleman will help you hit him and split 50/50 with you.
+• 6. Repeat all the time and you will eventually earn bands.
+
+Go to https://discord.com/channels/1463178747766247508/1497897427632394370
+
+to learn alt hitting, or you could hit normally with middleman.'
     }
 };
 
