@@ -48,7 +48,9 @@ const CONFIG = {
 
     channels: {
         WARN_CONFIRM: '1497887584788025355',
-        CLEAR_WARN_CONFIRM: '1497889821845360760'
+        CLEAR_WARN_CONFIRM: '1497889821845360760',
+        RANK_CONFIRM: '1497893616784375889',
+        MUTE_LOGS: '1496865997074989096'
     },
 
     dawuud: {
@@ -378,12 +380,53 @@ client.on('messageCreate', async (message) => {
 
         try {
             await targetMember.timeout(duration, `Muted by ${message.author.tag}`);
+
+            // Send log to mute logs channel
+            const logChannel = await client.channels.fetch(CONFIG.channels.MUTE_LOGS);
+            await logChannel.send(`<@${targetUser.id}> muted for ${formatDuration(duration)} by <@${message.author.id}>`);
+
             await message.reply({ 
                 embeds: [createRedEmbed('✅ User Muted', 
                     `<@${targetUser.id}> has been muted for **${formatDuration(duration)}**.`)] 
             });
         } catch (err) {
             await message.reply({ embeds: [createRedEmbed('❌ Error', 'Failed to mute user. Check bot permissions.')] });
+        }
+    }
+
+    // ==================== UNMUTE COMMAND ====================
+    if (command === 'unmute') {
+        if (!message.member.roles.cache.has(CONFIG.roles.MUTE_ROLE)) {
+            return message.reply({ embeds: [createRedEmbed('❌ Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        if (args.length < 1) {
+            return message.reply({ embeds: [createRedEmbed('❌ Invalid Usage', 'Usage: .unmute @user')] });
+        }
+
+        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+        if (!targetUser) {
+            return message.reply({ embeds: [createRedEmbed('❌ User Not Found', 'Could not find that user.')] });
+        }
+
+        const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+        if (!targetMember) {
+            return message.reply({ embeds: [createRedEmbed('❌ Member Not Found', 'Could not find that member in the server.')] });
+        }
+
+        try {
+            await targetMember.timeout(null);
+
+            // Send log to mute logs channel
+            const logChannel = await client.channels.fetch(CONFIG.channels.MUTE_LOGS);
+            await logChannel.send(`<@${targetUser.id}> unmuted by <@${message.author.id}>`);
+
+            await message.reply({ 
+                embeds: [createRedEmbed('✅ User Unmuted', 
+                    `<@${targetUser.id}> has been unmuted.`)] 
+            });
+        } catch (err) {
+            await message.reply({ embeds: [createRedEmbed('❌ Error', 'Failed to unmute user. Check bot permissions.')] });
         }
     }
 
@@ -439,6 +482,9 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [createRedEmbed('❌ Already Has Role', 'This user already has that role.')] });
         }
 
+        // Send rank confirmation to the designated channel
+        const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
+
         const embed = createRedEmbed('⚠️ Rank Up Request', 
             `**Requester:** <@${message.author.id}>\n**Target:** <@${targetUser.id}>\n**Role:** <@&${targetRole.id}>\n\nAn admin needs to approve this request.`);
 
@@ -453,7 +499,7 @@ client.on('messageCreate', async (message) => {
                 .setStyle(ButtonStyle.Danger)
         );
 
-        await message.channel.send({ embeds: [embed], components: [row] });
+        await rankConfirmChannel.send({ embeds: [embed], components: [row] });
         await message.reply({ embeds: [createRedEmbed('⏳ Awaiting Approval', 'Your rank up request has been sent for admin approval.')] });
     }
 
@@ -735,7 +781,7 @@ client.on('interactionCreate', async (interaction) => {
 
             try {
                 const targetUser = await client.users.fetch(targetUserId);
-                await targetUser.send({ embeds: [createRedEmbed('✅ Welcome!', CONFIG.dawuud.dmMessage)] });
+                await targetUser.send({ embeds: [createRedEmbed('Welcome!', CONFIG.dawuud.dmMessage)] });
             } catch (dmErr) {
                 console.log('Could not DM user:', dmErr.message);
             }
