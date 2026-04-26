@@ -52,7 +52,8 @@ const CONFIG = {
         WARN_CONFIRM: '1497887584788025355',
         CLEAR_WARN_CONFIRM: '1497889821845360760',
         RANK_CONFIRM: '1497893616784375889',
-        MUTE_LOGS: '1496865997074989096'
+        MUTE_LOGS: '1496865997074989096',
+        KICK_BAN_CONFIRM: '1497934917345214514'
     },
 
     dawuud: {
@@ -88,6 +89,8 @@ let warningsData = {};
 let breakData = {};
 let activeButtons = new Map();
 let dawuudCooldowns = new Map();
+let kickCooldowns = new Map();
+let banCooldowns = new Map();
 
 function loadWarnings() {
     try {
@@ -541,7 +544,111 @@ client.on('messageCreate', async (message) => {
         await message.reply({ embeds: [createRedEmbed('[...] Awaiting Approval', 'Your rank up request has been sent for admin approval.')] });
     }
 
-    // ==================== BREAK COMMAND ====================
+    // ==================== KICK COMMAND ====================
+    if (command === 'kick') {
+        if (!message.member.roles.cache.has('1497884833446363286')) {
+            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        if (args.length < 2) {
+            return message.reply({ embeds: [createRedEmbed('[X] Invalid Usage', 'Usage: .kick @user (reason)')] });
+        }
+
+        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+        if (!targetUser) {
+            return message.reply({ embeds: [createRedEmbed('[X] User Not Found', 'Could not find that user.')] });
+        }
+
+        if (targetUser.id === message.author.id) {
+            return message.reply({ embeds: [createRedEmbed('[X] Error', 'You cannot kick yourself.')] });
+        }
+
+        const now = Date.now();
+        const lastUsed = kickCooldowns.get(message.author.id);
+        if (lastUsed && (now - lastUsed) < 30 * 60 * 1000) {
+            const remaining = Math.ceil((30 * 60 * 1000 - (now - lastUsed)) / 1000 / 60);
+            return message.reply({ embeds: [createRedEmbed('[...] Cooldown', `You must wait ${remaining} more minute(s) before using .kick again.`)] });
+        }
+
+        const reason = args.slice(1).join(' ');
+        const confirmChannel = await client.channels.fetch(CONFIG.channels.KICK_BAN_CONFIRM);
+
+        const embed = createRedEmbed('[!] Kick Confirmation',
+            `**Target:** <@${targetUser.id}>
+**Reason:** ${reason}
+**Requested by:** <@${message.author.id}>
+
+A higher rank needs to approve this kick.`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`kick_confirm_${targetUser.id}_${message.author.id}_${Date.now()}`)
+                .setLabel('Approve')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`kick_decline_${targetUser.id}_${message.author.id}_${Date.now()}`)
+                .setLabel('Decline')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await confirmChannel.send({ embeds: [embed], components: [row] });
+        kickCooldowns.set(message.author.id, now);
+        await message.reply({ embeds: [createRedEmbed('[OK] Confirmation Sent', `A kick confirmation has been sent to <#${CONFIG.channels.KICK_BAN_CONFIRM}>.`)] });
+    }
+
+    // ==================== BAN COMMAND ====================
+    if (command === 'ban') {
+        if (!message.member.roles.cache.has('1497884892351041698')) {
+            return message.reply({ embeds: [createRedEmbed('[X] Permission Denied', 'You do not have permission to use this command.')] });
+        }
+
+        if (args.length < 2) {
+            return message.reply({ embeds: [createRedEmbed('[X] Invalid Usage', 'Usage: .ban @user (reason)')] });
+        }
+
+        const targetUser = message.mentions.users.first() || await client.users.fetch(args[0]).catch(() => null);
+        if (!targetUser) {
+            return message.reply({ embeds: [createRedEmbed('[X] User Not Found', 'Could not find that user.')] });
+        }
+
+        if (targetUser.id === message.author.id) {
+            return message.reply({ embeds: [createRedEmbed('[X] Error', 'You cannot ban yourself.')] });
+        }
+
+        const now = Date.now();
+        const lastUsed = banCooldowns.get(message.author.id);
+        if (lastUsed && (now - lastUsed) < 30 * 60 * 1000) {
+            const remaining = Math.ceil((30 * 60 * 1000 - (now - lastUsed)) / 1000 / 60);
+            return message.reply({ embeds: [createRedEmbed('[...] Cooldown', `You must wait ${remaining} more minute(s) before using .ban again.`)] });
+        }
+
+        const reason = args.slice(1).join(' ');
+        const confirmChannel = await client.channels.fetch(CONFIG.channels.KICK_BAN_CONFIRM);
+
+        const embed = createRedEmbed('[!] Ban Confirmation',
+            `**Target:** <@${targetUser.id}>
+**Reason:** ${reason}
+**Requested by:** <@${message.author.id}>
+
+A higher rank needs to approve this ban.`);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`ban_confirm_${targetUser.id}_${message.author.id}_${Date.now()}`)
+                .setLabel('Approve')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`ban_decline_${targetUser.id}_${message.author.id}_${Date.now()}`)
+                .setLabel('Decline')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await confirmChannel.send({ embeds: [embed], components: [row] });
+        banCooldowns.set(message.author.id, now);
+        await message.reply({ embeds: [createRedEmbed('[OK] Confirmation Sent', `A ban confirmation has been sent to <#${CONFIG.channels.KICK_BAN_CONFIRM}>.`)] });
+    }
+
+        // ==================== BREAK COMMAND ====================
     if (command === 'break') {
         const highestRole = getHighestRankRole(message.member);
         if (!highestRole) {
@@ -784,7 +891,139 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
-    // ==================== DAWUUD BUTTONS ====================
+    // ==================== KICK BUTTONS ====================
+    if (customId.startsWith('kick_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        const originalMessage = interaction.message;
+        const embedDescription = originalMessage.embeds[0].description;
+        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
+        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
+
+        try {
+            await targetMember.kick(reason);
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Kick Approved', `<@${targetUserId}> has been kicked.
+**Reason:** ${reason}
+**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to kick user. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('kick_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Kick Declined', `<@${targetUserId}> will not be kicked.
+**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+    // ==================== BAN BUTTONS ====================
+    if (customId.startsWith('ban_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const requesterId = parts[3];
+
+        const guild = interaction.guild;
+
+        const originalMessage = interaction.message;
+        const embedDescription = originalMessage.embeds[0].description;
+        const reasonMatch = embedDescription.match(/\*\*Reason:\*\* (.+)/);
+        const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';
+
+        try {
+            await guild.members.ban(targetUserId, { reason: reason });
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Ban Approved', `<@${targetUserId}> has been banned.
+**Reason:** ${reason}
+**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to ban user. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('ban_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Ban Declined', `<@${targetUserId}> will not be banned.
+**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+        // ==================== DEMOTE BUTTONS ====================
+    if (customId.startsWith('demote_confirm_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+        const requesterId = parts[4];
+
+        const guild = interaction.guild;
+        const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!targetMember) {
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
+            });
+        }
+
+        try {
+            await targetMember.roles.remove(targetRoleId);
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Demote Approved', `<@${targetUserId}> has been demoted and <@&${targetRoleId}> removed.
+**Approved by:** <@${interaction.user.id}>`)],
+                components: []
+            });
+        } catch (err) {
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to remove role. Check bot permissions.')],
+                components: []
+            });
+        }
+    }
+
+    if (customId.startsWith('demote_decline_')) {
+        const parts = customId.split('_');
+        const targetUserId = parts[2];
+        const targetRoleId = parts[3];
+
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Demote Declined', `<@${targetUserId}> will not be demoted. <@&${targetRoleId}> stays.
+**Declined by:** <@${interaction.user.id}>`)],
+            components: []
+        });
+    }
+
+        // ==================== DAWUUD BUTTONS ====================
     if (customId.includes('_accept') && customId.startsWith('dawuud_')) {
         const parts = customId.split('_');
         const targetUserId = parts[1];
