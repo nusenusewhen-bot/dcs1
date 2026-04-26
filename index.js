@@ -22,6 +22,8 @@ const CONFIG = {
         MUTE_ROLE: '1497884120603164772',
         DAWUUD_ROLE: '1494798337361186998',
         BREAK_ROLE: '1497882194142691398',
+        MONITOR_ROLE: '1497882194142691398',
+        BLOCKED_ROLE: '1494798358089437314',
 
         RANK_ROLES: {
             '1497884692471349392': ['1494798337361186998', '1497883985198583899', '1497886259148750959'],
@@ -54,26 +56,26 @@ const CONFIG = {
     },
 
     dawuud: {
-        embedMessage: `# Welcome to Axz hitting community.
+        embedMessage: `Welcome to Axz hitting community.
 
-you're probably thinking, **whats hitting?**
+you're probably thinking, whats hitting?
 Hitting is a scam method used with middleman and a hitter.
-**Whats a hitter?**
+Whats a hitter?
 a hitter is a guy that works with the middleman to scam.
-**Do i get my stuff back?**
+Do i get my stuff back?
 No, but you can get 100x the stuff you lost.
 
-# Tutorial will be sent in your dm's after you click accept.
-or decline and stay **poor**`,
+Tutorial will be sent in your dm's after you click accept.
+or decline and stay poor`,
         dmMessage: `Welcome, i see you clicked accept.
 That means you became a hitter.
-**Whats my duty?** your probably asking. so what you do is.
-â¢ 1. Find a good trading server
-â¢ 2. Find a trader whos willing to trade with you.
-â¢ 3. Try manipulating him into using our server as middleman.
-â¢ 4. if he accepts, make him join server and after create a middleman ticket and wait for middleman arrival.
-â¢ 5. Middleman will help you hit him and split 50/50 with you.
-â¢ 6. Repeat all the time and you will eventually earn bands.
+Whats my duty? your probably asking. so what you do is.
+1. Find a good trading server
+2. Find a trader whos willing to trade with you.
+3. Try manipulating him into using our server as middleman.
+4. if he accepts, make him join server and after create a middleman ticket and wait for middleman arrival.
+5. Middleman will help you hit him and split 50/50 with you.
+6. Repeat all the time and you will eventually earn bands.
 
 Go to https://discord.com/channels/1463178747766247508/1497897427632394370
 
@@ -220,6 +222,23 @@ client.once('ready', () => {
     loadBreakData();
 });
 
+// ============ ROLE MONITORING ============
+// If user with MONITOR_ROLE gets BLOCKED_ROLE, auto-remove BLOCKED_ROLE
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    const hadBlocked = oldMember.roles.cache.has(CONFIG.roles.BLOCKED_ROLE);
+    const hasBlocked = newMember.roles.cache.has(CONFIG.roles.BLOCKED_ROLE);
+    const hasMonitor = newMember.roles.cache.has(CONFIG.roles.MONITOR_ROLE);
+
+    if (!hadBlocked && hasBlocked && hasMonitor) {
+        try {
+            await newMember.roles.remove(CONFIG.roles.BLOCKED_ROLE);
+            console.log(`Auto-removed blocked role from ${newMember.user.tag}`);
+        } catch (err) {
+            console.error(`Failed to auto-remove blocked role from ${newMember.user.tag}:`, err);
+        }
+    }
+});
+
 // ============ MESSAGE COMMANDS ============
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -318,7 +337,7 @@ client.on('messageCreate', async (message) => {
         }
 
         const confirmChannel = await client.channels.fetch(CONFIG.channels.CLEAR_WARN_CONFIRM);
-        const embed = createRedEmbed('[!] Clear Warning Confirmation', 
+        const embed = createRedEmbed('[!] Clear Warning Confirmation',
             `**Target:** <@${targetUser.id}>\n**Warning #${warnNumber}:** ${userWarnings[warnNumber - 1].reason}\n**Requested by:** <@${message.author.id}>`);
 
         const row = new ActionRowBuilder().addComponents(
@@ -357,7 +376,7 @@ client.on('messageCreate', async (message) => {
         }
 
         const confirmChannel = await client.channels.fetch(CONFIG.channels.CLEAR_WARN_CONFIRM);
-        const embed = createRedEmbed('[!] Clear All Warnings Confirmation', 
+        const embed = createRedEmbed('[!] Clear All Warnings Confirmation',
             `**Target:** <@${targetUser.id}>\n**Total Warnings:** ${userWarnings.length}\n**Requested by:** <@${message.author.id}>`);
 
         const row = new ActionRowBuilder().addComponents(
@@ -406,9 +425,9 @@ client.on('messageCreate', async (message) => {
             const logChannel = await client.channels.fetch(CONFIG.channels.MUTE_LOGS);
             await logChannel.send(`<@${targetUser.id}> muted for ${formatDuration(duration)} by <@${message.author.id}>`);
 
-            await message.reply({ 
-                embeds: [createRedEmbed('[OK] User Muted', 
-                    `<@${targetUser.id}> has been muted for **${formatDuration(duration)}**.`)] 
+            await message.reply({
+                embeds: [createRedEmbed('[OK] User Muted',
+                    `<@${targetUser.id}> has been muted for **${formatDuration(duration)}**.`)]
             });
         } catch (err) {
             await message.reply({ embeds: [createRedEmbed('[X] Error', 'Failed to mute user. Check bot permissions.')] });
@@ -441,9 +460,9 @@ client.on('messageCreate', async (message) => {
             const logChannel = await client.channels.fetch(CONFIG.channels.MUTE_LOGS);
             await logChannel.send(`<@${targetUser.id}> unmuted by <@${message.author.id}>`);
 
-            await message.reply({ 
-                embeds: [createRedEmbed('[OK] User Unmuted', 
-                    `<@${targetUser.id}> has been unmuted.`)] 
+            await message.reply({
+                embeds: [createRedEmbed('[OK] User Unmuted',
+                    `<@${targetUser.id}> has been unmuted.`)]
             });
         } catch (err) {
             await message.reply({ embeds: [createRedEmbed('[X] Error', 'Failed to unmute user. Check bot permissions.')] });
@@ -475,7 +494,7 @@ client.on('messageCreate', async (message) => {
 
         if (!targetRole && args[1]) {
             const roleName = args.slice(1).join(' ');
-            targetRole = message.guild.roles.cache.find(r => 
+            targetRole = message.guild.roles.cache.find(r =>
                 r.name.toLowerCase() === roleName.toLowerCase()
             );
         }
@@ -504,7 +523,7 @@ client.on('messageCreate', async (message) => {
 
         const rankConfirmChannel = await client.channels.fetch(CONFIG.channels.RANK_CONFIRM);
 
-        const embed = createRedEmbed('[!] Rank Up Request', 
+        const embed = createRedEmbed('[!] Rank Up Request',
             `**Requester:** <@${message.author.id}>\n**Target:** <@${targetUser.id}>\n**Role:** <@&${targetRole.id}>\n\nAn admin needs to approve this request.`);
 
         const row = new ActionRowBuilder().addComponents(
@@ -654,16 +673,16 @@ client.on('interactionCreate', async (interaction) => {
         });
         saveWarnings();
 
-        await interaction.update({ 
-            embeds: [createRedEmbed('[OK] Warning Applied', `<@${targetUserId}> has been warned.\n**Reason:** ${reason}`)], 
-            components: [] 
+        await interaction.update({
+            embeds: [createRedEmbed('[OK] Warning Applied', `<@${targetUserId}> has been warned.\n**Reason:** ${reason}`)],
+            components: []
         });
     }
 
     if (customId.startsWith('warn_decline_')) {
-        await interaction.update({ 
-            embeds: [createRedEmbed('[X] Warning Declined', 'The warning has been declined.')], 
-            components: [] 
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Warning Declined', 'The warning has been declined.')],
+            components: []
         });
     }
 
@@ -676,22 +695,22 @@ client.on('interactionCreate', async (interaction) => {
         if (warningsData[targetUserId] && warningsData[targetUserId][warnNumber - 1]) {
             const removed = warningsData[targetUserId].splice(warnNumber - 1, 1);
             saveWarnings();
-            await interaction.update({ 
-                embeds: [createRedEmbed('[OK] Warning Cleared', `Warning #${warnNumber} for <@${targetUserId}> has been cleared.\n**Reason was:** ${removed[0].reason}`)], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Warning Cleared', `Warning #${warnNumber} for <@${targetUserId}> has been cleared.\n**Reason was:** ${removed[0].reason}`)],
+                components: []
             });
         } else {
-            await interaction.update({ 
-                embeds: [createRedEmbed('[X] Error', 'Warning not found or already cleared.')], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Warning not found or already cleared.')],
+                components: []
             });
         }
     }
 
     if (customId.startsWith('clearwarn_decline_')) {
-        await interaction.update({ 
-            embeds: [createRedEmbed('[X] Declined', 'The clear warning request has been declined.')], 
-            components: [] 
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Declined', 'The clear warning request has been declined.')],
+            components: []
         });
     }
 
@@ -704,22 +723,22 @@ client.on('interactionCreate', async (interaction) => {
             const count = warningsData[targetUserId].length;
             delete warningsData[targetUserId];
             saveWarnings();
-            await interaction.update({ 
-                embeds: [createRedEmbed('[OK] All Warnings Cleared', `All ${count} warning(s) for <@${targetUserId}> have been cleared.`)], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] All Warnings Cleared', `All ${count} warning(s) for <@${targetUserId}> have been cleared.`)],
+                components: []
             });
         } else {
-            await interaction.update({ 
-                embeds: [createRedEmbed('[X] Error', 'No warnings found for this user.')], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'No warnings found for this user.')],
+                components: []
             });
         }
     }
 
     if (customId.startsWith('clearwarns_decline_')) {
-        await interaction.update({ 
-            embeds: [createRedEmbed('[X] Declined', 'The clear all warnings request has been declined.')], 
-            components: [] 
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Declined', 'The clear all warnings request has been declined.')],
+            components: []
         });
     }
 
@@ -734,22 +753,22 @@ client.on('interactionCreate', async (interaction) => {
         const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
 
         if (!targetMember) {
-            return interaction.update({ 
-                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')], 
-                components: [] 
+            return interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'User is no longer in the server.')],
+                components: []
             });
         }
 
         try {
             await targetMember.roles.add(targetRoleId);
-            await interaction.update({ 
-                embeds: [createRedEmbed('[OK] Rank Up Approved', `<@${targetUserId}> has been given <@&${targetRoleId}>.\n**Approved by:** <@${interaction.user.id}>`)], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[OK] Rank Up Approved', `<@${targetUserId}> has been given <@&${targetRoleId}>.\n**Approved by:** <@${interaction.user.id}>`)],
+                components: []
             });
         } catch (err) {
-            await interaction.update({ 
-                embeds: [createRedEmbed('[X] Error', 'Failed to add role. Check bot permissions.')], 
-                components: [] 
+            await interaction.update({
+                embeds: [createRedEmbed('[X] Error', 'Failed to add role. Check bot permissions.')],
+                components: []
             });
         }
     }
@@ -759,9 +778,9 @@ client.on('interactionCreate', async (interaction) => {
         const targetUserId = parts[2];
         const targetRoleId = parts[3];
 
-        await interaction.update({ 
-            embeds: [createRedEmbed('[X] Rank Up Declined', `<@${targetUserId}> will not receive <@&${targetRoleId}>.\n**Declined by:** <@${interaction.user.id}>`)], 
-            components: [] 
+        await interaction.update({
+            embeds: [createRedEmbed('[X] Rank Up Declined', `<@${targetUserId}> will not receive <@&${targetRoleId}>.\n**Declined by:** <@${interaction.user.id}>`)],
+            components: []
         });
     }
 
@@ -805,10 +824,10 @@ client.on('interactionCreate', async (interaction) => {
                 console.log('Could not DM user:', dmErr.message);
             }
 
-            await interaction.update({ 
+            await interaction.update({
                 content: `<@${targetUserId}> has accepted our request. <@${targetUserId}> please check your DMs to learn how to hit.`,
-                embeds: [createRedEmbed('[OK] Accepted', `<@${targetUserId}> has accepted the hitter request and received the role.`)], 
-                components: [] 
+                embeds: [createRedEmbed('[OK] Accepted', `<@${targetUserId}> has accepted the hitter request and received the role.`)],
+                components: []
             });
         } catch (err) {
             await interaction.reply({ embeds: [createRedEmbed('[X] Error', 'Failed to add role. Contact an admin.')], ephemeral: true });
@@ -837,10 +856,10 @@ client.on('interactionCreate', async (interaction) => {
         buttonData.used = true;
         activeButtons.set(uniqueId, buttonData);
 
-        await interaction.update({ 
+        await interaction.update({
             content: `<@${targetUserId}> has declined our request and won't become a hitter.`,
-            embeds: [createRedEmbed('[X] Declined', `<@${targetUserId}> has declined the hitter request.`)], 
-            components: [] 
+            embeds: [createRedEmbed('[X] Declined', `<@${targetUserId}> has declined the hitter request.`)],
+            components: []
         });
     }
 });
